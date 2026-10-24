@@ -1,0 +1,25 @@
+# Keep deployment state and downloaded models outside this source checkout.
+/flare-state/
+/state/
+/preparation/
+/cache/
+/packages/
+/public/
+/runtime/
+/logs/
+/models/
+/.cache/
+/.venv/
+
+# Credentials, model payloads, image archives and generated files.
+*.pem
+*.key
+*.token
+*.safetensors
+*.bin
+*.tar
+*.tar.gz
+*.pt.trace.json
+*.pt.trace.json.gz
+__pycache__/
+*.py[cod]

@@ -1,0 +1,3 @@
+# Dockerfiles fetch the pinned public source themselves; never upload local data.
+**
+!Dockerfile
