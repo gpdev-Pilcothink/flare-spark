@@ -146,6 +146,16 @@ upload() {
 
 # Preflight before starting any GPU process. No automatic pull or tag overwrite.
 IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$IMAGE") || fail "Build $IMAGE first"
+# Detect the installed CLI, not the image tag: older exports accept --output;
+# newer exports publish a cache entry and no longer accept that option.
+EXPORT_HELP=$(docker run --rm --pull never --entrypoint /opt/venv/bin/ignition "$IMAGE" export --help) \
+  || fail 'Cannot inspect ignition export options in the selected image'
+if printf '%s\n' "$EXPORT_HELP" | grep -qE -- '(^|[[:space:]])--output([[:space:]=,]|$)'; then
+  EXPORT_MODE=output
+else
+  EXPORT_MODE=cache
+fi
+say "Ignition export mode: $EXPORT_MODE"
 USERS=("$(id -u):$(id -g)")
 for peer in "${PEERS[@]}"; do
   say "Checking SSH and image on $peer"
@@ -401,7 +411,10 @@ start() {
       cmd+=(--gpus all --ulimit stack=67108864 --env HOME=/runtime --workdir /runtime
         --mount "type=bind,src=$DATA/public,dst=/public,readonly"
         --mount "type=bind,src=$DATA/runtime,dst=/runtime")
-      if ((n == 0)); then cmd+=(--mount "type=bind,src=$PACKAGE_CACHE,dst=/state/cache/packages,readonly"); fi ;;
+      if ((n == 0)); then
+        cmd+=(--mount "type=bind,src=$PACKAGE_CACHE,dst=/state/cache/packages,readonly"
+          --mount "type=bind,src=$PACKAGE_DIR,dst=/package,readonly")
+      fi ;;
     *) fail "Unknown container phase: $phase" ;;
   esac
   NAMES[$n]=$name; ACTIVE+=("$n")
@@ -519,20 +532,31 @@ done
 finish_phase 'RDMA QP preflight' 1 '; no model was loaded'
 
 # ── 08 / Official multi-host export, or reuse an existing package ─────────────
-if [[ -f "$PACKAGE_REFERENCE" ]]; then
-  IFS= read -r PACKAGE_ARG < "$PACKAGE_REFERENCE" || true
-fi
-if [[ -n "$PACKAGE_ARG" && "$PACKAGE_ARG" == /state/cache/packages/*/model.safetensors ]]; then
-  PACKAGE="$PACKAGE_CACHE/${PACKAGE_ARG#/state/cache/packages/}"
-  if [[ ! -f "$PACKAGE" ]]; then PACKAGE=''; PACKAGE_ARG=''; fi
+if [[ "$EXPORT_MODE" == output ]]; then
+  if [[ -f "$PACKAGE_DIR/model.safetensors" ]]; then
+    PACKAGE="$PACKAGE_DIR/model.safetensors"
+    PACKAGE_ARG=/package/model.safetensors
+  fi
 else
-  PACKAGE_ARG=''
+  if [[ -f "$PACKAGE_REFERENCE" ]]; then
+    IFS= read -r PACKAGE_ARG < "$PACKAGE_REFERENCE" || true
+  fi
+  if [[ -n "$PACKAGE_ARG" && "$PACKAGE_ARG" == /state/cache/packages/*/model.safetensors ]]; then
+    PACKAGE="$PACKAGE_CACHE/${PACKAGE_ARG#/state/cache/packages/}"
+    if [[ ! -f "$PACKAGE" ]]; then PACKAGE=''; PACKAGE_ARG=''; fi
+  else
+    PACKAGE_ARG=''
+  fi
 fi
 if [[ -z "$PACKAGE" ]]; then
   say 'Preparing a new multi-host package; existing tuning/compiler caches are retained.'
+  EXPORT_ARGS=()
+  if [[ "$EXPORT_MODE" == output ]]; then
+    EXPORT_ARGS+=(--output "/state/packages/$KEY/model.safetensors")
+  fi
   start 0 prepare /opt/venv/bin/ignition export "$MODEL_INPUT" \
     --config /state/preparation/config.toml --ranks "$RANKS" --rendezvous "$HEAD_IP:$PREP_PORT" --gpus 0 \
-    "${PREP_ARGS[@]}" --verbose
+    "${PREP_ARGS[@]}" "${EXPORT_ARGS[@]}" --verbose
   follow 0
   wait_for_head_port "$PREP_PORT" 'Preparation head exited before rendezvous opened'
   for ((n=1;n<RANKS;n++)); do
@@ -541,11 +565,16 @@ if [[ -z "$PACKAGE" ]]; then
     follow "$n"
   done
   finish_phase Preparation 2
-  export_log="$RUN_LOGS/$RUN_ID-prepare-r0.log"
-  PACKAGE_ENTRY=$(sed -n 's/^Exported cache entry: //p' "$export_log" | tail -n 1)
-  [[ "$PACKAGE_ENTRY" == /state/cache/packages/* ]] || fail 'Export did not report a package entry within the configured cache'
-  PACKAGE_ARG="$PACKAGE_ENTRY/model.safetensors"
-  PACKAGE="$PACKAGE_CACHE/${PACKAGE_ARG#/state/cache/packages/}"
+  if [[ "$EXPORT_MODE" == output ]]; then
+    PACKAGE="$PACKAGE_DIR/model.safetensors"
+    PACKAGE_ARG=/package/model.safetensors
+  else
+    export_log="$RUN_LOGS/$RUN_ID-prepare-r0.log"
+    PACKAGE_ENTRY=$(sed -n 's/^Exported cache entry: //p' "$export_log" | tail -n 1)
+    [[ "$PACKAGE_ENTRY" == /state/cache/packages/* ]] || fail 'Export did not report a package entry within the configured cache'
+    PACKAGE_ARG="$PACKAGE_ENTRY/model.safetensors"
+    PACKAGE="$PACKAGE_CACHE/${PACKAGE_ARG#/state/cache/packages/}"
+  fi
   [[ -f "$PACKAGE" ]] || fail "Exported package is missing: $PACKAGE"
 else
   say "Reusing package: $PACKAGE"
@@ -560,11 +589,14 @@ for peer in "${PEERS[@]}"; do upload "$peer" "$DATA/public/development-publisher
 # exact verified key and local-development namespace, never a blanket trust bypass.
 INSPECTION=$(docker run --rm --pull never --user "${USERS[0]}" --env HOME=/tmp \
   --mount "type=bind,src=$PACKAGE_CACHE,dst=/state/cache/packages,readonly" \
+  --mount "type=bind,src=$PACKAGE_DIR,dst=/package,readonly" \
   --mount "type=bind,src=$DATA/public,dst=/public,readonly" --entrypoint /usr/local/bin/flare \
   "$IMAGE" inspect "$PACKAGE_ARG" --publisher-keys /public/development-publisher.json --json)
 FINGERPRINT=$(printf '%s' "$INSPECTION" | python3 -c 'import json,re,sys; p=json.load(sys.stdin)["package"]; s=p["publisher"]; assert p["signatures_verified"] is True and p["ranks"]==int(sys.argv[1]); assert s["development"] is True and s["namespace"]=="local-development"; f=s["fingerprint"]; assert re.fullmatch("[0-9a-f]{64}",f); print(f)' "$RANKS")
-printf '%s\n' "$PACKAGE_ARG" > "$PACKAGE_REFERENCE.tmp"
-mv -f -- "$PACKAGE_REFERENCE.tmp" "$PACKAGE_REFERENCE"
+if [[ "$EXPORT_MODE" == cache ]]; then
+  printf '%s\n' "$PACKAGE_ARG" > "$PACKAGE_REFERENCE.tmp"
+  mv -f -- "$PACKAGE_REFERENCE.tmp" "$PACKAGE_REFERENCE"
+fi
 TRUST_ARGS=(--publisher-keys /public/development-publisher.json --trust-store /runtime/trust.toml
   --package-cache /runtime/packages --dangerously-approve-key "$FINGERPRINT" --dangerously-accept-publisher local-development)
 HEAD_ARGS=(--host "$HTTP_HOST" --port "$HTTP_PORT")
