@@ -16,6 +16,9 @@ Serve **`nvidia/GLM-5.3-Flash-FP4-Local`** with FLARE using one rank on each Spa
 | Prepared context ceiling | 1,048,576 tokens |
 | API model name | `glm-5.3-flash` |
 
+> [!NOTE]
+> The image version listed above is the version used when this guide was tested. We recommend using the image tagged `latest` when possible. If serving with `latest` does not work with this guide, use the tested image version listed above and please open an issue.
+
 The concurrency, MTP, and prefill values are supplied by the commands below; they are not forced image defaults. See the [main README](../README.md) for build details, requirements, security settings, and persistent files.
 
 ## 1. Download the launcher

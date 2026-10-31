@@ -16,6 +16,9 @@ Serve [NVIDIA Qwen3.8 Flash Next FP4 Local](https://huggingface.co/nvidia/Qwen3.
 | Test date | 2026-10-31 |
 | Image version | `pre-0.2` |
 
+> [!NOTE]
+> The image version listed above is the version used when this guide was tested. We recommend using the image tagged `latest` when possible. If serving with `latest` does not work with this guide, use the tested image version listed above and please open an issue.
+
 ## 1. Download the launcher
 
 For two Sparks, download [flare_cluster.sh](../flare_cluster.sh) onto the head. To build the image, also download [Dockerfile](../Dockerfile) and [.dockerignore](../.dockerignore) to the same directory.
