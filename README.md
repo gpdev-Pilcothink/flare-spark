@@ -2,7 +2,7 @@
 
 **English** | [한국어](README.ko.md)
 
-Build or pull one Docker image for model preparation and native serving, then launch a multi-node DGX Spark cluster from the head node.
+Pull one Docker image for model preparation and native serving, then launch a multi-node DGX Spark cluster from the head node.
 
 This recipe uses [NVIDIA FLARE](https://github.com/NVIDIA/flare-local-inference). Ignition prepares the model with PyTorch and FlashInfer/B12X; the native Rust Flare server loads the resulting package. The separate `flare_cluster.sh` launcher handles Docker and SSH orchestration.
 
@@ -58,7 +58,7 @@ Each worker receives its checkpoint ranges through the official preparation prot
 
 ## 1. Download the files on the head
 
-Always download [flare_cluster.sh](flare_cluster.sh) on the head, including when using a pulled image. If you choose to build the image yourself, also download [Dockerfile](Dockerfile) and [.dockerignore](.dockerignore) into the same directory. On GitHub, open each file and use **Download raw file**, or download the repository ZIP and open the directory containing this README.
+Always download [flare_cluster.sh](flare_cluster.sh) on the head, including when using a pulled image. On GitHub, open each file and use **Download raw file**, or download the repository ZIP and open the directory containing this README.
 
 Check that the files are present before continuing:
 
@@ -68,30 +68,13 @@ ls -l flare_cluster.sh
 
 The workers do not need a copy of the launcher. The head controls them through SSH. Commands use `bash flare_cluster.sh`, so no executable-bit change is required.
 
-## 2. Build or pull the image on the head
-
-Choose **one** of the following methods. Both produce the local tag `flare_spark:pre-0.1` used by the launch examples.
-
-### Option A: build it yourself
-
-Run this from the directory containing `Dockerfile` and `.dockerignore` on the head Spark:
+## 2. Pull the image on the head
 
 ```bash
-docker build -t flare_spark:pre-0.1 .
+docker pull pilcothink/flare_spark
 ```
 
-### Option B: pull the published image
-
-Once the image tag has been published, run this on the head:
-
-```bash
-docker pull pilcothink/flare_spark:pre-0.1
-docker tag pilcothink/flare_spark:pre-0.1 flare_spark:pre-0.1
-```
-
-The second command gives the pulled image the same local tag used by the build method; it does not rebuild the image. The host-side `flare_cluster.sh` is still required. The launcher can then distribute this image to the workers with `--sync-image`.
-
-`pre-0.1` is this recipe's image tag, not an upstream FLARE release number.
+The host-side `flare_cluster.sh` is still required. The launcher can distribute this image to the workers with `--sync-image`.
 
 | Component | Build selection |
 |---|---|
@@ -109,7 +92,7 @@ The Dockerfile corrects a known ARM64 packaging issue in the locked cuSPARSELt 0
 
 ## 3. Choose image transfer on launch
 
-After building or pulling the image on the head, choose either transfer method. Obtaining the image and transferring it are separate steps; `--sync-image` belongs to the **launcher command**, not `docker build` or `docker pull`.
+After pulling the image on the head, choose either transfer method. Obtaining the image and transferring it are separate steps; `--sync-image` belongs to the **launcher command**, not `docker build` or `docker pull`.
 
 **Automatic transfer:** add `--sync-image` after `--workers` in the launcher command, as shown in the guide. When you run that command:
 
@@ -124,10 +107,10 @@ An identical worker image is skipped. Every listed worker is checked. This optio
 
 ```bash
 # Head
-docker save -o flare_spark_pre-0.1.tar flare_spark:pre-0.1
+docker save -o flare_spark.tar pilcothink/flare_spark
 
 # Each worker, after copying the archive
-docker load -i flare_spark_pre-0.1.tar
+docker load -i flare_spark.tar
 ```
 
 Without `--sync-image`, the launcher stops if image IDs differ. It does not automatically pull an image or discover worker nodes. `--workers` supplies the SSH destination explicitly.

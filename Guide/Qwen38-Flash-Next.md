@@ -2,6 +2,9 @@
 
 Serve [NVIDIA Qwen3.8 Flash Next FP4 Local](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local) with FLARE. The commands below use disk-backed N-gram embedding tables.
 
+> [!WARNING]
+> **The first launch can take a long time while FLARE prepares and packages the model before serving.**
+
 > [!IMPORTANT]
 > **Download this repository's [flare_cluster.sh](../flare_cluster.sh) before running the two-Spark command.** The launcher runs on the head and is not included in the Docker image.
 
@@ -21,23 +24,16 @@ Serve [NVIDIA Qwen3.8 Flash Next FP4 Local](https://huggingface.co/nvidia/Qwen3.
 
 ## 1. Download the launcher
 
-For two Sparks, download [flare_cluster.sh](../flare_cluster.sh) onto the head. To build the image, also download [Dockerfile](../Dockerfile) and [.dockerignore](../.dockerignore) to the same directory.
+For two Sparks, download [flare_cluster.sh](../flare_cluster.sh) onto the head.
 
-## 2. Check the nodes, then build or pull on the head
+## 2. Check the nodes, then pull the image on the head
 
 For two Sparks, complete the official multi-node setup and NCCL checks in the [main README](../README.md).
 
-Choose one option on the Spark used for serving. For two nodes, use the head node.
-
-```bash
-docker build -t flare_spark:pre-0.2 .
-```
-
-Or, after the image has been published:
+Pull the image on the Spark used for serving. For two nodes, use the head node:
 
 ```bash
 docker pull pilcothink/flare_spark:pre-0.2
-docker tag pilcothink/flare_spark:pre-0.2 flare_spark:pre-0.2
 ```
 
 ## 3. Set the common addresses and directories
@@ -67,7 +63,7 @@ docker run --rm -it \
   -v "$STATE_DIR/cache:/root/.cache" \
   -v "$STATE_DIR/config:/root/.config/flare" \
   --entrypoint /bin/bash \
-  flare_spark:pre-0.2
+  pilcothink/flare_spark:pre-0.2
 ```
 
 Inside the container, prepare the package:
@@ -98,7 +94,7 @@ Complete the official multi-node setup and NCCL checks in the [main README](../R
 Set the fabric interface and worker SSH address for your own setup:
 
 ```bash
-FLARE_IMAGE=flare_spark:pre-0.2
+FLARE_IMAGE=pilcothink/flare_spark:pre-0.2
 FABRIC_IFACE="YOUR_HEAD_FABRIC_INTERFACE"
 HEAD_FABRIC_IP=$(ip -4 -o addr show "$FABRIC_IFACE" | awk 'NR==1 {split($4,a,"/"); print a[1]}')
 WORKER_NODE="USER@WORKER_FABRIC_IP"

@@ -2,6 +2,9 @@
 
 Serve **`nvidia/GLM-5.3-Flash-FP4-Local`** with FLARE using one rank on each Spark. Two-node preparation, package export, and native HTTP server startup have completed successfully. The pinned official recipe also supports four ranks; the four-node example below has not been tested on hardware by the repository owner.
 
+> [!WARNING]
+> **The first launch can take a long time while FLARE prepares and packages the model before serving.**
+
 > [!IMPORTANT]
 > **Download this repository's [flare_cluster.sh](../flare_cluster.sh) before running these commands.** This is a host-side launcher, not a command bundled inside the Docker image. Downloading or building the image alone is not enough. Open a terminal on the head in the directory containing the downloaded script. Do not start a separate launcher on the workers.
 
@@ -19,19 +22,19 @@ Serve **`nvidia/GLM-5.3-Flash-FP4-Local`** with FLARE using one rank on each Spa
 > [!NOTE]
 > The image version listed above is the version used when this guide was tested. We recommend using the image tagged `latest` when possible. If serving with `latest` does not work with this guide, use the tested image version listed above and please open an issue.
 
-The concurrency, MTP, and prefill values are supplied by the commands below; they are not forced image defaults. See the [main README](../README.md) for build details, requirements, security settings, and persistent files.
+The concurrency, MTP, and prefill values are supplied by the commands below; they are not forced image defaults. See the [main README](../README.md) for requirements, security settings, and persistent files.
 
 ## 1. Download the launcher
 
-Always download [flare_cluster.sh](../flare_cluster.sh) on the head, even if you will pull the image. If building it yourself, also download [Dockerfile](../Dockerfile) and [.dockerignore](../.dockerignore) into the same directory. On GitHub, open each file and use **Download raw file**, or download the repository ZIP and open the directory containing these files.
+Always download [flare_cluster.sh](../flare_cluster.sh) on the head, even if you will pull the image. On GitHub, open each file and use **Download raw file**, or download the repository ZIP and open the directory containing these files.
 
 ```bash
 ls -l flare_cluster.sh
 ```
 
-The workers do not need the script or build files. The head uses SSH to run Docker commands on them. Because the commands below use `bash flare_cluster.sh`, `chmod +x` is not required.
+The workers do not need the script. The head uses SSH to run Docker commands on them. Because the commands below use `bash flare_cluster.sh`, `chmod +x` is not required.
 
-## 2. Check the nodes, then build or pull on the head
+## 2. Check the nodes, then pull the image on the head
 
 First complete the official network setup and NCCL validation described in the [main README](../README.md). Run the NCCL tests across all nodes you intend to use before starting model preparation.
 
@@ -39,35 +42,20 @@ Every node needs working GPU-enabled Docker and RoCEv2 IPv4 connectivity. The he
 
 For four Sparks, all four nodes must be able to communicate over the RoCE fabric. A direct cable connecting only the original two Sparks is insufficient. The current launcher uses the direct peer-to-peer transport; this guide does not configure a ring or chain.
 
-Choose **one** method below. Both use the local tag `flare_spark:pre-0.1`, so the later launch commands are identical.
-
-### Option A: build it yourself
-
-Run from the directory containing `Dockerfile` and `.dockerignore`:
-
-```bash
-docker build -t flare_spark:pre-0.1 .
-```
-
-### Option B: pull the published image
-
-Once the image tag has been published, run:
+Pull the image on the head:
 
 ```bash
 docker pull pilcothink/flare_spark:pre-0.1
-docker tag pilcothink/flare_spark:pre-0.1 flare_spark:pre-0.1
 ```
 
-The second command adds the local tag used below without rebuilding. Pulling does not provide the host-side launcher; download `flare_cluster.sh` as described in Step 1.
-
-Build or pull only on the head. The launch examples use `--sync-image` to transfer the image to the workers when needed. If you already copied and loaded the identical image on every worker manually, omit that flag.
+The launch examples use `--sync-image` to transfer the image to the workers when needed. If you already copied and loaded the identical image on every worker manually, omit that flag.
 
 ## 3. Set the common addresses and directories
 
 Replace every placeholder below. None of these values is a bundled deployment address or a personal directory.
 
 ```bash
-FLARE_IMAGE=flare_spark:pre-0.1
+FLARE_IMAGE=pilcothink/flare_spark:pre-0.1
 FABRIC_IFACE="YOUR_HEAD_FABRIC_INTERFACE"
 HEAD_FABRIC_IP=$(ip -4 -o addr show "$FABRIC_IFACE" | awk 'NR==1 {split($4,a,"/"); print a[1]}')
 MODEL_DIR="/absolute/path/to/GLM-5.3-Flash-FP4-Local"

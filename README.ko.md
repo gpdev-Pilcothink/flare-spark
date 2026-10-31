@@ -58,7 +58,7 @@
 
 ## 1. 헤드에서 필요한 파일 내려받기
 
-이미지를 Pull해서 사용하더라도 헤드에 [flare_cluster.sh](flare_cluster.sh)는 반드시 내려받으세요. 이미지를 직접 빌드한다면 [Dockerfile](Dockerfile)과 [.dockerignore](.dockerignore)도 같은 디렉터리에 내려받으세요. GitHub에서 각 파일을 열고 **Download raw file**을 사용하거나, 저장소 ZIP을 내려받은 뒤 이 README가 있는 디렉터리를 여세요.
+이미지를 Pull해서 사용하더라도 헤드에 [flare_cluster.sh](flare_cluster.sh)는 반드시 내려받으세요. GitHub에서 각 파일을 열고 **Download raw file**을 사용하거나, 저장소 ZIP을 내려받은 뒤 이 README가 있는 디렉터리를 여세요.
 
 다음 단계로 넘어가기 전에 파일이 있는지 확인하세요.
 
@@ -68,30 +68,13 @@ ls -l flare_cluster.sh
 
 워커에는 스크립트를 복사하지 않아도 됩니다. 헤드가 SSH로 워커를 제어합니다. `bash flare_cluster.sh`로 실행하므로 실행 권한을 별도로 바꿀 필요도 없습니다.
 
-## 2. 헤드에서 직접 빌드하거나 Pull하기
-
-다음 방법 중 **하나만** 선택하세요. 어느 방법을 사용해도 실행 예시에서 사용하는 로컬 태그는 `flare_spark:pre-0.1`로 같습니다.
-
-### 방법 A: 직접 빌드하기
-
-헤드 Spark에서 `Dockerfile`과 `.dockerignore`가 있는 디렉터리로 이동한 뒤 실행하세요.
+## 2. 헤드에서 이미지 Pull하기
 
 ```bash
-docker build -t flare_spark:pre-0.1 .
+docker pull pilcothink/flare_spark
 ```
 
-### 방법 B: 공개 이미지 Pull하기
-
-해당 이미지 태그가 공개된 뒤 헤드에서 실행하세요.
-
-```bash
-docker pull pilcothink/flare_spark:pre-0.1
-docker tag pilcothink/flare_spark:pre-0.1 flare_spark:pre-0.1
-```
-
-두 번째 명령은 Pull한 이미지에 직접 빌드할 때와 같은 로컬 태그를 붙이며, 이미지를 다시 빌드하지 않습니다. 호스트의 `flare_cluster.sh`는 여전히 필요합니다. 이후 `--sync-image`로 이 이미지를 워커에 전달할 수 있습니다.
-
-`pre-0.1`은 이 프로젝트에서 정한 이미지 태그이며, FLARE 원본 프로젝트의 릴리스 번호가 아닙니다.
+호스트의 `flare_cluster.sh`가 필요합니다. `--sync-image`로 이미지를 워커에 전달할 수 있습니다.
 
 | 구성 요소 | 빌드 기준 |
 |---|---|
@@ -109,7 +92,7 @@ Dockerfile은 고정된 cuSPARSELt 0.8.1 ARM64 wheel의 패키징 문제를 보�
 
 ## 3. 실행 시 이미지 전달 방식 선택하기
 
-헤드에서 이미지를 빌드하거나 Pull한 뒤, 아래 전달 방법 중 하나를 선택하세요. 이미지 준비와 전달은 별도 단계입니다. **`--sync-image`는 `docker build`나 `docker pull`이 아니라 실행 스크립트의 인자입니다.**
+헤드에서 이미지를 Pull한 뒤, 아래 전달 방법 중 하나를 선택하세요. 이미지 준비와 전달은 별도 단계입니다. **`--sync-image`는 `docker build`나 `docker pull`이 아니라 실행 스크립트의 인자입니다.**
 
 **자동 전달:** 가이드의 실행 명령처럼 `--workers` 다음에 `--sync-image`를 넣으세요. 명령을 실행하면 다음 순서로 진행됩니다.
 
@@ -124,10 +107,10 @@ Dockerfile은 고정된 cuSPARSELt 0.8.1 ARM64 wheel의 패키징 문제를 보�
 
 ```bash
 # 헤드
-docker save -o flare_spark_pre-0.1.tar flare_spark:pre-0.1
+docker save -o flare_spark.tar pilcothink/flare_spark
 
 # 파일을 복사한 뒤 각 워커에서 실행
-docker load -i flare_spark_pre-0.1.tar
+docker load -i flare_spark.tar
 ```
 
 `--sync-image` 없이 실행하면 이미지 ID가 다른 워커가 있을 때 중단합니다. 이미지를 자동으로 pull하거나 워커를 자동 탐색하지 않습니다. SSH 접속 대상은 `--workers`로 직접 지정합니다.
