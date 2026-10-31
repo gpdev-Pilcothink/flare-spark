@@ -2,7 +2,7 @@
 # ============================================================================
 # FLARE: one image for Ignition preparation AND native Rust serving
 #
-#   docker build -t flare_spark:pre-0.1 .
+#   docker build -t flare_spark:pre-0.2 .
 #
 # Building this image installs software, without loading any model or GPU.
 # flare_cluster.sh runs preparation peers and serving ranks from the head.
@@ -41,10 +41,10 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-ini
     && rm /tmp/rustup-init.sh
 
 # ---- 2 / Pinned official source; no model-computation patch ------------------
-ARG FLARE_REF=d5fd9824593c2a70f6bdc001b39f16b4c5b3b0b4
+ARG FLARE_REF=eb71702b2e710cb407702ed0cde2970c8e3bfdad
 WORKDIR /opt/flare
 RUN git init . \
-    && git remote add origin https://github.com/NVIDIA/flare-local-inference.git \
+    && git remote add origin https://github.com/NVIDIA/spark-local-inference.git \
     && git fetch --depth 1 origin "${FLARE_REF}" \
     && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${FLARE_REF}"
@@ -60,6 +60,12 @@ RUN --mount=type=cache,id=flare-prepare-uv-${TARGETARCH},target=/root/.cache/uv,
     --mount=type=cache,id=flare-prepare-target-${TARGETARCH},target=/tmp/flare-cargo-target,sharing=locked \
     CARGO_TARGET_DIR=/tmp/flare-cargo-target \
       uv sync --locked --python /usr/bin/python3.12 --extra prepare --extra test
+
+# The pinned upstream release includes three exact-context Torch/Triton fixes.
+# Apply them while the image is built so non-root preparation containers can
+# reuse the already-correct environment without writing to /opt/venv at startup.
+# This is the upstream preparation mechanism, not a model or precision patch.
+RUN /opt/venv/bin/python3 -m ignition.patches
 
 # ---- 4 / Native helper required by multi-host preparation -------------------
 RUN --mount=type=cache,id=flare-prepare-registry,target=/opt/cargo/registry,sharing=locked \
@@ -150,7 +156,7 @@ CUSPARSELT_CHECK
 uv pip check --python /opt/venv/bin/python3
 FLARE_PACKAGE_CHECK
 
-LABEL org.opencontainers.image.source="https://github.com/NVIDIA/flare-local-inference" \
+LABEL org.opencontainers.image.source="https://github.com/NVIDIA/spark-local-inference" \
       org.opencontainers.image.revision="${FLARE_REF}"
 ENTRYPOINT ["/usr/local/bin/flare"]
 CMD ["--help"]

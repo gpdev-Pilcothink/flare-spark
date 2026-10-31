@@ -7,6 +7,8 @@ Serve **`nvidia/GLM-5.3-Flash-FP4-Local`** with FLARE using one rank on each Spa
 
 | Setting | Example value |
 |---|---|
+| Test date | Not recorded |
+| Image version | `pre-0.1` |
 | Tensor parallelism | 2 or 4, selected by the worker count |
 | Concurrent request slots | 12 |
 | Maximum MTP draft tokens | 5 |

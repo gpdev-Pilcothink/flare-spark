@@ -270,8 +270,11 @@ KEY=$({
   if $FRESH; then printf '%s\0' "$(date +%s%N)-$$"; fi
 } | sha256sum | cut -c1-24)
 PACKAGE_DIR="$DATA/packages/$KEY"
-PACKAGE="$PACKAGE_DIR/model.safetensors"
-mkdir -p "$PACKAGE_DIR"
+PACKAGE_REFERENCE="$PACKAGE_DIR/cache-entry"
+PACKAGE_CACHE="$DATA/cache/packages"
+PACKAGE=''
+PACKAGE_ARG=''
+mkdir -p "$PACKAGE_DIR" "$PACKAGE_CACHE"
 cat > "$DATA/preparation/config.toml" <<'TOML'
 [preparation]
 checkpoint_token_file = "/state/preparation/agent.token"
@@ -398,7 +401,7 @@ start() {
       cmd+=(--gpus all --ulimit stack=67108864 --env HOME=/runtime --workdir /runtime
         --mount "type=bind,src=$DATA/public,dst=/public,readonly"
         --mount "type=bind,src=$DATA/runtime,dst=/runtime")
-      if ((n == 0)); then cmd+=(--mount "type=bind,src=$PACKAGE_DIR,dst=/package,readonly"); fi ;;
+      if ((n == 0)); then cmd+=(--mount "type=bind,src=$PACKAGE_CACHE,dst=/state/cache/packages,readonly"); fi ;;
     *) fail "Unknown container phase: $phase" ;;
   esac
   NAMES[$n]=$name; ACTIVE+=("$n")
@@ -516,11 +519,20 @@ done
 finish_phase 'RDMA QP preflight' 1 '; no model was loaded'
 
 # ── 08 / Official multi-host export, or reuse an existing package ─────────────
-if [[ ! -f "$PACKAGE" ]]; then
+if [[ -f "$PACKAGE_REFERENCE" ]]; then
+  IFS= read -r PACKAGE_ARG < "$PACKAGE_REFERENCE" || true
+fi
+if [[ -n "$PACKAGE_ARG" && "$PACKAGE_ARG" == /state/cache/packages/*/model.safetensors ]]; then
+  PACKAGE="$PACKAGE_CACHE/${PACKAGE_ARG#/state/cache/packages/}"
+  if [[ ! -f "$PACKAGE" ]]; then PACKAGE=''; PACKAGE_ARG=''; fi
+else
+  PACKAGE_ARG=''
+fi
+if [[ -z "$PACKAGE" ]]; then
   say 'Preparing a new multi-host package; existing tuning/compiler caches are retained.'
   start 0 prepare /opt/venv/bin/ignition export "$MODEL_INPUT" \
     --config /state/preparation/config.toml --ranks "$RANKS" --rendezvous "$HEAD_IP:$PREP_PORT" --gpus 0 \
-    "${PREP_ARGS[@]}" --output "/state/packages/$KEY/model.safetensors" --verbose
+    "${PREP_ARGS[@]}" --verbose
   follow 0
   wait_for_head_port "$PREP_PORT" 'Preparation head exited before rendezvous opened'
   for ((n=1;n<RANKS;n++)); do
@@ -529,6 +541,12 @@ if [[ ! -f "$PACKAGE" ]]; then
     follow "$n"
   done
   finish_phase Preparation 2
+  export_log="$RUN_LOGS/$RUN_ID-prepare-r0.log"
+  PACKAGE_ENTRY=$(sed -n 's/^Exported cache entry: //p' "$export_log" | tail -n 1)
+  [[ "$PACKAGE_ENTRY" == /state/cache/packages/* ]] || fail 'Export did not report a package entry within the configured cache'
+  PACKAGE_ARG="$PACKAGE_ENTRY/model.safetensors"
+  PACKAGE="$PACKAGE_CACHE/${PACKAGE_ARG#/state/cache/packages/}"
+  [[ -f "$PACKAGE" ]] || fail "Exported package is missing: $PACKAGE"
 else
   say "Reusing package: $PACKAGE"
 fi
@@ -541,15 +559,17 @@ for peer in "${PEERS[@]}"; do upload "$peer" "$DATA/public/development-publisher
 # Signature verification is retained. Approval is restricted to this local export's
 # exact verified key and local-development namespace, never a blanket trust bypass.
 INSPECTION=$(docker run --rm --pull never --user "${USERS[0]}" --env HOME=/tmp \
-  --mount "type=bind,src=$PACKAGE_DIR,dst=/package,readonly" \
+  --mount "type=bind,src=$PACKAGE_CACHE,dst=/state/cache/packages,readonly" \
   --mount "type=bind,src=$DATA/public,dst=/public,readonly" --entrypoint /usr/local/bin/flare \
-  "$IMAGE" inspect /package/model.safetensors --publisher-keys /public/development-publisher.json --json)
+  "$IMAGE" inspect "$PACKAGE_ARG" --publisher-keys /public/development-publisher.json --json)
 FINGERPRINT=$(printf '%s' "$INSPECTION" | python3 -c 'import json,re,sys; p=json.load(sys.stdin)["package"]; s=p["publisher"]; assert p["signatures_verified"] is True and p["ranks"]==int(sys.argv[1]); assert s["development"] is True and s["namespace"]=="local-development"; f=s["fingerprint"]; assert re.fullmatch("[0-9a-f]{64}",f); print(f)' "$RANKS")
+printf '%s\n' "$PACKAGE_ARG" > "$PACKAGE_REFERENCE.tmp"
+mv -f -- "$PACKAGE_REFERENCE.tmp" "$PACKAGE_REFERENCE"
 TRUST_ARGS=(--publisher-keys /public/development-publisher.json --trust-store /runtime/trust.toml
   --package-cache /runtime/packages --dangerously-approve-key "$FINGERPRINT" --dangerously-accept-publisher local-development)
 HEAD_ARGS=(--host "$HTTP_HOST" --port "$HTTP_PORT")
 if [[ -n "$ALIAS" ]]; then HEAD_ARGS+=(--served-model-name "$ALIAS"); fi
-start 0 serve /usr/local/bin/flare run /package/model.safetensors "${TRUST_ARGS[@]}" \
+start 0 serve /usr/local/bin/flare run "$PACKAGE_ARG" "${TRUST_ARGS[@]}" \
   --rank 0 --rendezvous "$HEAD_IP:$MASTER_PORT" --gpus 0 "${SERVE_ARGS[@]}" "${HEAD_ARGS[@]}"
 follow 0
 wait_for_head_port "$MASTER_PORT" 'Serving head exited before rendezvous opened'

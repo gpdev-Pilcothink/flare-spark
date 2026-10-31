@@ -1,3 +1,12 @@
+# Local workspace rules; do not publish.
+/관리.md
+/가이드_양식.md
+
+# Local upstream checkout and private architecture notes; do not publish.
+/flare-local-inference/
+/분석_README/
+/Test/
+
 # Keep deployment state and downloaded models outside this source checkout.
 /flare-state/
 /state/
