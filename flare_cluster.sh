@@ -266,6 +266,14 @@ for ((n=0;n<RANKS;n++)); do
   read -r hcas gid netdev address <<< "$fields"
   RDMA_HCAS+=("$hcas"); RDMA_GIDS+=("$gid"); RDMA_NETDEVS+=("$netdev")
   say "RDMA rank $n: HCA=$hcas GID=$gid RoCEv2 IPv4=$address netdev=$netdev"
+  node "$n" bash -c '
+    hcas=$1 dir=$2/runtime/isolated_ib
+    mkdir -p "$dir" && rm -rf "${dir:?}"/*
+    for dev in ${hcas//,/ }; do
+      p=$(readlink -f "/sys/class/infiniband/$dev" 2>/dev/null || true)
+      [[ -n "$p" && -d "$p" ]] && ln -s "$p" "$dir/$dev"
+    done
+  ' -- "$hcas" "$DATA"
 done
 
 # ── 04 / Existing package identity and official configuration ─────────────────
@@ -410,7 +418,11 @@ start() {
       # Mount public keys and runtime state only; never preparation private keys.
       cmd+=(--gpus all --ulimit stack=67108864 --env HOME=/runtime --workdir /runtime
         --mount "type=bind,src=$DATA/public,dst=/public,readonly"
-        --mount "type=bind,src=$DATA/runtime,dst=/runtime")
+        --mount "type=bind,src=$DATA/runtime,dst=/runtime"
+        --env "B12X_ROCE_GID_INDEX=${RDMA_GIDS[$n]}")
+      if [[ -d "$DATA/runtime/isolated_ib" ]]; then
+        cmd+=(--mount "type=bind,src=$DATA/runtime/isolated_ib,dst=/sys/class/infiniband,readonly")
+      fi
       if ((n == 0)); then
         cmd+=(--mount "type=bind,src=$PACKAGE_CACHE,dst=/state/cache/packages,readonly"
           --mount "type=bind,src=$PACKAGE_DIR,dst=/package,readonly")
