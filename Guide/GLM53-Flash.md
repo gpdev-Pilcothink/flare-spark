@@ -11,7 +11,7 @@ Serve **`nvidia/GLM-5.3-Flash-FP4-Local`** with FLARE using one rank on each Spa
 | Setting | Example value |
 |---|---|
 | Test date | Not recorded |
-| Image version | `pre-0.1` |
+| Image version | `pre-0.2` |
 | Tensor parallelism | 2 or 4, selected by the worker count |
 | Concurrent request slots | 12 |
 | Maximum MTP draft tokens | 5 |
@@ -45,7 +45,7 @@ For four Sparks, all four nodes must be able to communicate over the RoCE fabric
 Pull the image on the head:
 
 ```bash
-docker pull pilcothink/flare_spark:pre-0.1
+docker pull pilcothink/flare_spark:pre-0.2
 ```
 
 The launch examples use `--sync-image` to transfer the image to the workers when needed. If you already copied and loaded the identical image on every worker manually, omit that flag.
@@ -55,7 +55,7 @@ The launch examples use `--sync-image` to transfer the image to the workers when
 Replace every placeholder below. None of these values is a bundled deployment address or a personal directory.
 
 ```bash
-FLARE_IMAGE=pilcothink/flare_spark:pre-0.1
+FLARE_IMAGE=pilcothink/flare_spark:pre-0.2
 FABRIC_IFACE="YOUR_HEAD_FABRIC_INTERFACE"
 HEAD_FABRIC_IP=$(ip -4 -o addr show "$FABRIC_IFACE" | awk 'NR==1 {split($4,a,"/"); print a[1]}')
 MODEL_DIR="/absolute/path/to/GLM-5.3-Flash-FP4-Local"
@@ -174,9 +174,7 @@ The official GLM recipe prepares a **1,048,576-token context ceiling**. The nati
 The successful **two-node** startup log included the following capacity and readiness information, with deployment addresses omitted:
 
 ```text
-[    OK    ] Prepare execution.  concurrency 12
-[    OK    ] Allocate cache.  11.8 GiB · 3439616 KV tokens · 96 shared snapshot slots · limited by memory
-[    OK    ] Start server.  http://0.0.0.0:8000 · 1048576 tokens/request
+[    OK    ] Allocate cache.  16.0 GiB · 4782080 KV tokens · 96 shared snapshot slots · limited by memory  1.0s
 ```
 
 The KV capacity is shared by active requests and retained prefixes. Do not multiply it by the number of TP ranks or interpret twelve request slots as twelve full 1M-token conversations at once. The observed cache allocation can change with memory availability and preparation settings.
