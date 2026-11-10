@@ -360,16 +360,6 @@ RUN_ID="flare-$(date +%s)-$$"
 RUN_LOGS="$DATA/logs/$RUN_ID"
 RUN_IB_DIR="$DATA/runtime/$RUN_ID-ib"
 (umask 077; mkdir -p "$RUN_LOGS")
-for ((n=0;n<RANKS;n++)); do
-  node "$n" bash -c '
-    hcas=$1 dir=$2
-    mkdir -p "$dir"
-    for dev in ${hcas//,/ }; do
-      p=$(readlink -f "/sys/class/infiniband/$dev" 2>/dev/null || true)
-      [[ -n "$p" && -d "$p" ]] && ln -s "$p" "$dir/$dev"
-    done
-  ' -- "${RDMA_HCAS[$n]}" "$RUN_IB_DIR"
-done
 NAMES=() ACTIVE=() LOG_PIDS=()
 save_log() {
   local n=$1 name=$2
@@ -380,7 +370,7 @@ save_log() {
 cleanup() {
   local status=$? n name owner
   trap - EXIT INT TERM HUP
-  set +e
+  set +eu
   for pid in "${LOG_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
   for n in "${ACTIVE[@]}"; do
     name=${NAMES[$n]}
@@ -401,6 +391,27 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
+
+# Register cleanup before creating state on any node.
+for ((n=0;n<RANKS;n++)); do
+  node "$n" bash -euc '
+    hcas=$1 dir=$2
+    mkdir -p "$dir" || exit 1
+    IFS=, read -r -a devices <<< "$hcas"
+    for dev in "${devices[@]}"; do
+      p=$(readlink -f "/sys/class/infiniband/$dev") || {
+        printf "Cannot resolve HCA %s\n" "$dev" >&2; exit 1;
+      }
+      [[ -n "$p" && -d "$p" ]] || {
+        printf "Missing HCA %s\n" "$dev" >&2; exit 1;
+      }
+      ln -s "$p" "$dir/$dev" || {
+        printf "Cannot link HCA %s\n" "$dev" >&2; exit 1;
+      }
+    done
+  ' -- "${RDMA_HCAS[$n]}" "$RUN_IB_DIR" \
+    || fail "Cannot isolate fabric HCAs on rank $n"
+done
 
 start() {
   local n=$1 phase=$2 executable=$3; shift 3
