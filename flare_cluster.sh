@@ -358,6 +358,7 @@ done
 # ── 06 / Container lifecycle; shared by checks, preparation and serving ───────
 RUN_ID="flare-$(date +%s)-$$"
 RUN_LOGS="$DATA/logs/$RUN_ID"
+RUN_IB_DIR="$DATA/runtime/$RUN_ID-ib"
 (umask 077; mkdir -p "$RUN_LOGS")
 NAMES=() ACTIVE=() LOG_PIDS=()
 save_log() {
@@ -369,7 +370,7 @@ save_log() {
 cleanup() {
   local status=$? n name owner
   trap - EXIT INT TERM HUP
-  set +e
+  set +eu
   for pid in "${LOG_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
   for n in "${ACTIVE[@]}"; do
     name=${NAMES[$n]}
@@ -381,12 +382,36 @@ cleanup() {
       node "$n" docker rm "$name" >/dev/null 2>&1
     fi
   done
+  for ((n=0;n<RANKS;n++)); do
+    node "$n" rm -rf -- "$RUN_IB_DIR" >/dev/null 2>&1 || true
+  done
   exit "$status"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
+
+# Register cleanup before creating state on any node.
+for ((n=0;n<RANKS;n++)); do
+  node "$n" bash -euc '
+    hcas=$1 dir=$2
+    mkdir -p "$dir" || exit 1
+    IFS=, read -r -a devices <<< "$hcas"
+    for dev in "${devices[@]}"; do
+      p=$(readlink -f "/sys/class/infiniband/$dev") || {
+        printf "Cannot resolve HCA %s\n" "$dev" >&2; exit 1;
+      }
+      [[ -n "$p" && -d "$p" ]] || {
+        printf "Missing HCA %s\n" "$dev" >&2; exit 1;
+      }
+      ln -s "$p" "$dir/$dev" || {
+        printf "Cannot link HCA %s\n" "$dev" >&2; exit 1;
+      }
+    done
+  ' -- "${RDMA_HCAS[$n]}" "$RUN_IB_DIR" \
+    || fail "Cannot isolate fabric HCAs on rank $n"
+done
 
 start() {
   local n=$1 phase=$2 executable=$3; shift 3
@@ -407,10 +432,11 @@ start() {
       fi ;;
     serve)
       # Native Flare uses its official fabric discovery, not the Python B12X env.
-      # Mount public keys and runtime state only; never preparation private keys.
+      # Mount public keys, runtime state, and the isolated active fabric HCA.
       cmd+=(--gpus all --ulimit stack=67108864 --env HOME=/runtime --workdir /runtime
         --mount "type=bind,src=$DATA/public,dst=/public,readonly"
-        --mount "type=bind,src=$DATA/runtime,dst=/runtime")
+        --mount "type=bind,src=$DATA/runtime,dst=/runtime"
+        --mount "type=bind,src=$RUN_IB_DIR,dst=/sys/class/infiniband,readonly")
       if ((n == 0)); then
         cmd+=(--mount "type=bind,src=$PACKAGE_CACHE,dst=/state/cache/packages,readonly"
           --mount "type=bind,src=$PACKAGE_DIR,dst=/package,readonly")
