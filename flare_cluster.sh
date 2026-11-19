@@ -10,7 +10,7 @@ usage() {
 Usage: bash flare_cluster.sh IMAGE HEAD_IP --workers SSH_HOST[,SSH_HOST...] \
   --model CHECKPOINT --state-dir ABSOLUTE_PATH [options]
 
-IMAGE example: flare_spark:pre-0.1
+IMAGE example: flare_spark:pre-0.2  (ships Flare/ignition 0.1.0; use pre-0.1 for legacy cores)
 CHECKPOINT: local checkpoint directory on the head, or a Flare recipe alias.
 The state directory must be accessible at the same absolute path on all nodes.
 
@@ -22,6 +22,16 @@ Cluster options:
   --host ADDRESS --port N      HTTP listener (defaults 0.0.0.0, 8000).
   --served-model-name NAME     Optional API alias.
   --memory-limit LIMIT         Optional native serving memory limit.
+
+Official serving options (Flare >= 0.1.0), forwarded only when supplied:
+  --scheduler-policy MODE      balanced (default) or throughput.
+  --scheduler-terminal-value N Value per terminal retirement in prompt tokens.
+  --kv-cache-limit MODE        memory (default), context, or concurrency.
+  --embedding-table-storage M  disk (default) or ram.
+  --embedding-table-cache-size SIZE
+  --prefix-cache-memory SIZE   Warm host memory for prefix checkpoints.
+  --prefix-cache-disk DIR      Directory for prefix checkpoints on disk.
+  --prefix-cache-pool ADDRESS  Shared prefix-cache pool (unix:PATH / HOST:PORT / tls:HOST:PORT).
   --dry-run                    Print the launch flow; no SSH, Docker or file writes.
 
 Official preparation options, forwarded only when supplied:
@@ -29,6 +39,7 @@ Official preparation options, forwarded only when supplied:
   --image-concurrency N --compile-workers N --autotune-effort LEVEL
   --speculative-token-capacity N --no-mtp --no-mtp-adaptive-verification
   --no-context-parallel --no-stream-overlap --language-model-only
+  --roce-chain / --roce-ring   Multi-host cabling topology (v0.1.0+).
 
 First run: export on the head + join on peers, then serve on all ranks.
 Later runs: reuse the matching signed package. Ctrl-C stops this launch's ranks.
@@ -70,6 +81,9 @@ while (($#)); do
     --no-mtp-adaptive-verification) PREP_ARGS+=("$1"); SERVE_ARGS+=("$1"); shift ;;
     --no-context-parallel|--no-stream-overlap|--language-model-only)
       PREP_ARGS+=("$1"); shift ;;
+    --roce-ring|--roce-chain) PREP_ARGS+=("$1"); SERVE_ARGS+=("$1"); shift ;;
+    --scheduler-policy|--kv-cache-limit|--embedding-table-storage|--embedding-table-cache-size|--prefix-cache-memory|--prefix-cache-disk|--prefix-cache-pool|--scheduler-terminal-value)
+      value "$@"; SERVE_ARGS+=("$1" "$2"); shift 2 ;;
     --sync-image) SYNC=true; shift ;;
     --fresh) FRESH=true; shift ;;
     --dry-run) DRY=true; shift ;;
