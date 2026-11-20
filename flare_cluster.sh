@@ -10,7 +10,7 @@ usage() {
 Usage: bash flare_cluster.sh IMAGE HEAD_IP --workers SSH_HOST[,SSH_HOST...] \
   --model CHECKPOINT --state-dir ABSOLUTE_PATH [options]
 
-IMAGE example: flare_spark:pre-0.1
+IMAGE example: pilcothink/flare_spark:pre-0.2
 CHECKPOINT: local checkpoint directory on the head, or a Flare recipe alias.
 The state directory must be accessible at the same absolute path on all nodes.
 
@@ -23,6 +23,13 @@ Cluster options:
   --served-model-name NAME     Optional API alias.
   --memory-limit LIMIT         Optional native serving memory limit.
   --dry-run                    Print the launch flow; no SSH, Docker or file writes.
+
+Serving options available in the pre-0.2 recipe image (forwarded only when supplied):
+  --scheduler-policy MODE        balanced (default) or throughput.
+  --scheduler-terminal-value V   Value per terminal retirement in prompt tokens.
+  --kv-cache-limit MODE          memory (default), context, or concurrency.
+  --embedding-table-storage MODE  disk (default) or ram.
+  --embedding-table-cache-size SIZE
 
 Official preparation options, forwarded only when supplied:
   --max-concurrency N --mtp-draft-tokens N --prefill-chunk-size N
@@ -70,6 +77,8 @@ while (($#)); do
     --no-mtp-adaptive-verification) PREP_ARGS+=("$1"); SERVE_ARGS+=("$1"); shift ;;
     --no-context-parallel|--no-stream-overlap|--language-model-only)
       PREP_ARGS+=("$1"); shift ;;
+    --scheduler-policy|--scheduler-terminal-value|--kv-cache-limit|--embedding-table-storage|--embedding-table-cache-size)
+      value "$@"; SERVE_ARGS+=("$1" "$2"); shift 2 ;;
     --sync-image) SYNC=true; shift ;;
     --fresh) FRESH=true; shift ;;
     --dry-run) DRY=true; shift ;;
@@ -103,17 +112,17 @@ if $DRY; then
   say "One image: $IMAGE; $RANKS ranks; commands are issued only on the head."
   say 'If no matching package exists, prepare it:'
   show docker run "${CONTAINER_SECURITY[@]}" --entrypoint /opt/venv/bin/ignition "$IMAGE" export "$MODEL" \
-    --ranks "$RANKS" --rendezvous "$HEAD_IP:$PREP_PORT" --gpus 0 "${PREP_ARGS[@]}"
+    --ranks "$RANKS" --rendezvous "$HEAD_IP:$PREP_PORT" --gpus 0 ${PREP_ARGS[@]+"${PREP_ARGS[@]}"}
   for i in "${!PEERS[@]}"; do
     show ssh "${PEERS[$i]}" docker run "${CONTAINER_SECURITY[@]}" --entrypoint /opt/venv/bin/ignition "$IMAGE" \
       join "$HEAD_IP:$PREP_PORT" --rank "$((i+1))" --ranks "$RANKS" --gpu 0
   done
   say 'Then verify the locally signed package and start its serving ranks:'
   show docker run "${CONTAINER_SECURITY[@]}" --entrypoint /usr/local/bin/flare "$IMAGE" run '<prepared-package>' \
-    --rank 0 --rendezvous "$HEAD_IP:$MASTER_PORT" "${SERVE_ARGS[@]}" --host "$HTTP_HOST" --port "$HTTP_PORT"
+    --rank 0 --rendezvous "$HEAD_IP:$MASTER_PORT" ${SERVE_ARGS[@]+"${SERVE_ARGS[@]}"} --host "$HTTP_HOST" --port "$HTTP_PORT"
   for i in "${!PEERS[@]}"; do
     show ssh "${PEERS[$i]}" docker run "${CONTAINER_SECURITY[@]}" --entrypoint /usr/local/bin/flare "$IMAGE" run \
-      --rank "$((i+1))" --rendezvous "$HEAD_IP:$MASTER_PORT" "${SERVE_ARGS[@]}"
+      --rank "$((i+1))" --rendezvous "$HEAD_IP:$MASTER_PORT" ${SERVE_ARGS[@]+"${SERVE_ARGS[@]}"}
   done
   exit 0
 fi
