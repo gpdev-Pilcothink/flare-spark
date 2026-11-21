@@ -259,6 +259,51 @@ The completed head package is under `STATE_DIR/packages/<identifier>/model.safet
 llama-benchy (0.4.1.dev1+ge9be34457)
 ```
 
+## 10. Known model quirks and client-side mitigations
+
+The items below are properties of the `nvidia/GLM-5.3-Flash-FP4-Local` checkpoint and the official recipe, verified against the shipped `generation_config.json`, `chat_template.jinja`, `tokenizer.json`, and FLARE upstream source. They are not launcher bugs. Client-side mitigations are provided because the engine does not currently patch them.
+
+### Missing `<|assistant|>` end-of-sequence token
+
+The checkpoint's `generation_config.json` lists EOS ids `[154820, 154827, 154829]` — `<|endoftext|>`, `<|user|>`, `<|observation|>`. Token **154828 `<|assistant|>` is not included**, and the recipe passes this list to the frontend unchanged (`ignition/recipes/glm53/bootstrap.py`, `prepare_frontend(..., eos_token_ids=generation["eos_token_id"])`).
+
+GLM-5.3 sometimes closes a reply by emitting `<|assistant|>`. Because that token does not stop generation, the model then writes a second assistant turn until `max_tokens`, and the client receives both turns concatenated.
+
+**Mitigation (client side):** pass an explicit stop string on every request:
+
+```json
+"stop": ["<|assistant|>"]
+```
+
+Alternatively, detect the literal text `<|assistant|>` in the reply and truncate there. A reply that appears to contain two concatenated answers is the symptom of this quirk.
+
+### `<tool_call>` markup returned as text on tool-less turns
+
+The serving stack parses `<tool_call>` markup into OpenAI `tool_calls` only when the request offers tools. On a turn sent **without** `tools`, with `tool_choice: "none"`, or with a tool list that does not include the called tool, the model's raw markup is returned as ordinary text:
+
+```text
+<tool_call>session_search<arg_key>query</arg_key><arg_value>…</arg_value></tool_call>
+```
+
+This most often occurs on the final-summary turn after an agent reaches its iteration limit, where the agent framework drops the tool list. The model behavior is engine-independent; vLLM exhibits the same behavior.
+
+**Mitigations (agent side):**
+
+- Raise the agent's iteration limit so it does not need a tool-less summary turn, or keep the relevant toolset enabled for the final turn.
+- If raw markup appears in a reply, treat it as a model request to call that tool; do not present it to the user as an answer.
+- Adding a closing system note such as “tools are unavailable for this reply” before tool-less turns reduces occurrences.
+
+### `Reasoning Effort` line is written into every prompt
+
+The shipped `chat_template.jinja` unconditionally writes `<|system|>Reasoning Effort: Max` (capitalized `reasoning_effort`, default `max`) at the head of every prompt, including turns where thinking is disabled. The recipe's `chat_template.patch.json` applies insertions to this official template but does not remove that line. A thinking-off reply can therefore still answer in a reasoning voice and may emit `</think>` (id 154842, also not an EOS).
+
+**Mitigations (client side):**
+
+- Pass a supported `reasoning_effort` value explicitly where the API accepts it, instead of relying on the default.
+- If thinking is off and a reply contains `</think>`, split on the first occurrence and treat the text after it as the answer.
+
+These checks were verified on the pinned recipe revision `d5fd9824593c2a70f6bdc001b39f16b4c5b3b0b4`. If upstream adds an EOS patch or a tool-call guard, retest before applying the client mitigations.
+
 ## References
 
 - [Model repository](https://huggingface.co/nvidia/GLM-5.3-Flash-FP4-Local)

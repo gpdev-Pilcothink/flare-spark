@@ -24,7 +24,16 @@ Cluster options:
   --memory-limit LIMIT         Optional native serving memory limit.
   --dry-run                    Print the launch flow; no SSH, Docker or file writes.
 
-Official preparation options, forwarded only when supplied:
+Dual-CX7 defaults (CLI options override environment defaults):
+  MAX_CONCURRENCY=8 MTP_DRAFT_TOKENS=3 NO_MTP_ADAPTIVE_VERIFICATION=1
+  Set NO_MTP_ADAPTIVE_VERIFICATION=0 to retain adaptive verification.
+  DUAL_CX7_IFACES=iface0,iface1 overrides NCCL_SOCKET_IFNAME on all nodes;
+  otherwise use each node's discovered fabric interface.
+  NCCL_IB_HCA=mlx5_0,mlx5_1 NCCL_IB_MERGE_NICS=1 NCCL_NET_GDR_LEVEL=SYS
+  NCCL_IB_QPS_PER_CONNECTION=4 NCCL_IB_SPLIT_DATA_ON_QPS=1 NCCL_IB_GID_INDEX=3
+  NCCL settings do not override native Flare/B12X fabric discovery.
+
+Official preparation options:
   --max-concurrency N --mtp-draft-tokens N --prefill-chunk-size N
   --image-concurrency N --compile-workers N --autotune-effort LEVEL
   --speculative-token-capacity N --no-mtp --no-mtp-adaptive-verification
@@ -49,6 +58,9 @@ IMAGE=$1 HEAD_IP=$2; shift 2
 WORKERS='' MODEL='' DATA='' ALIAS='' MEMORY=''
 PREP_PORT=29630 MASTER_PORT=29800 HTTP_HOST=0.0.0.0 HTTP_PORT=8000
 SYNC=false FRESH=false DRY=false
+MAX_CONCURRENCY="${MAX_CONCURRENCY:-8}"
+MTP_DRAFT_TOKENS="${MTP_DRAFT_TOKENS:-3}"
+NO_MTP_ADAPTIVE_VERIFICATION="${NO_MTP_ADAPTIVE_VERIFICATION:-1}"
 PREP_ARGS=() SERVE_ARGS=()
 while (($#)); do
   if [[ "$1" == --*=* ]]; then set -- "${1%%=*}" "${1#*=}" "${@:2}"; fi
@@ -62,12 +74,12 @@ while (($#)); do
     --port) value "$@"; HTTP_PORT=$2; shift 2 ;;
     --served-model-name) value "$@"; ALIAS=$2; shift 2 ;;
     --memory-limit) value "$@"; MEMORY=$2; shift 2 ;;
-    --max-concurrency|--mtp-draft-tokens)
-      value "$@"; PREP_ARGS+=("$1" "$2"); SERVE_ARGS+=("$1" "$2"); shift 2 ;;
+    --max-concurrency) value "$@"; MAX_CONCURRENCY=$2; shift 2 ;;
+    --mtp-draft-tokens) value "$@"; MTP_DRAFT_TOKENS=$2; shift 2 ;;
     --prefill-chunk-size|--image-concurrency|--compile-workers|--autotune-effort|--speculative-token-capacity)
       value "$@"; PREP_ARGS+=("$1" "$2"); shift 2 ;;
     --no-mtp) PREP_ARGS+=("$1"); shift ;;
-    --no-mtp-adaptive-verification) PREP_ARGS+=("$1"); SERVE_ARGS+=("$1"); shift ;;
+    --no-mtp-adaptive-verification) NO_MTP_ADAPTIVE_VERIFICATION=1; shift ;;
     --no-context-parallel|--no-stream-overlap|--language-model-only)
       PREP_ARGS+=("$1"); shift ;;
     --sync-image) SYNC=true; shift ;;
@@ -77,6 +89,16 @@ while (($#)); do
     *) fail "Unknown option: $1" ;;
   esac
 done
+[[ "$MAX_CONCURRENCY" =~ ^[1-9][0-9]*$ ]] || fail 'MAX_CONCURRENCY must be a positive integer'
+[[ "$MTP_DRAFT_TOKENS" =~ ^[0-9]+$ ]] || fail 'MTP_DRAFT_TOKENS must be a nonnegative integer'
+[[ "$NO_MTP_ADAPTIVE_VERIFICATION" == 0 || "$NO_MTP_ADAPTIVE_VERIFICATION" == 1 ]] \
+  || fail 'NO_MTP_ADAPTIVE_VERIFICATION must be 0 or 1'
+PREP_ARGS+=(--max-concurrency "$MAX_CONCURRENCY" --mtp-draft-tokens "$MTP_DRAFT_TOKENS")
+SERVE_ARGS+=(--max-concurrency "$MAX_CONCURRENCY" --mtp-draft-tokens "$MTP_DRAFT_TOKENS")
+if [[ "$NO_MTP_ADAPTIVE_VERIFICATION" == 1 ]]; then
+  PREP_ARGS+=(--no-mtp-adaptive-verification)
+  SERVE_ARGS+=(--no-mtp-adaptive-verification)
+fi
 [[ -n "$WORKERS" && -n "$MODEL" && -n "$DATA" ]] || fail '--workers, --model and --state-dir are required'
 [[ "$HEAD_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'HEAD_IP must be a reachable fabric IPv4 address'
 [[ "$DATA" == /* && "$DATA" != / && "$DATA" != *','* && "$DATA" != *$'\n'* ]] || fail '--state-dir must be an absolute path without commas/newlines'
@@ -97,22 +119,31 @@ if [[ -n "$MEMORY" ]]; then SERVE_ARGS+=(--memory-limit "$MEMORY"); fi
 # for these trusted Flare containers; retain the explicit user/device/cap limits.
 # This is a container launch setting, not an image or model-computation change.
 CONTAINER_SECURITY=(--security-opt seccomp=unconfined)
+NCCL_ENV=(
+  -e "NCCL_IB_HCA=${NCCL_IB_HCA:-mlx5_0,mlx5_1}"
+  -e "NCCL_IB_MERGE_NICS=${NCCL_IB_MERGE_NICS:-1}"
+  -e "NCCL_NET_GDR_LEVEL=${NCCL_NET_GDR_LEVEL:-SYS}"
+  -e "NCCL_IB_QPS_PER_CONNECTION=${NCCL_IB_QPS_PER_CONNECTION:-4}"
+  -e "NCCL_IB_SPLIT_DATA_ON_QPS=${NCCL_IB_SPLIT_DATA_ON_QPS:-1}"
+  -e "NCCL_IB_GID_INDEX=${NCCL_IB_GID_INDEX:-3}"
+)
 
 # The preview is deliberately side-effect free and needs no local model or GPU.
 if $DRY; then
+  NCCL_ENV+=(-e "NCCL_SOCKET_IFNAME=${DUAL_CX7_IFACES:-<per-node-discovered-interface>}")
   say "One image: $IMAGE; $RANKS ranks; commands are issued only on the head."
   say 'If no matching package exists, prepare it:'
-  show docker run "${CONTAINER_SECURITY[@]}" --entrypoint /opt/venv/bin/ignition "$IMAGE" export "$MODEL" \
+  show docker run "${CONTAINER_SECURITY[@]}" "${NCCL_ENV[@]}" --entrypoint /opt/venv/bin/ignition "$IMAGE" export "$MODEL" \
     --ranks "$RANKS" --rendezvous "$HEAD_IP:$PREP_PORT" --gpus 0 "${PREP_ARGS[@]}"
   for i in "${!PEERS[@]}"; do
-    show ssh "${PEERS[$i]}" docker run "${CONTAINER_SECURITY[@]}" --entrypoint /opt/venv/bin/ignition "$IMAGE" \
+    show ssh "${PEERS[$i]}" docker run "${CONTAINER_SECURITY[@]}" "${NCCL_ENV[@]}" --entrypoint /opt/venv/bin/ignition "$IMAGE" \
       join "$HEAD_IP:$PREP_PORT" --rank "$((i+1))" --ranks "$RANKS" --gpu 0
   done
   say 'Then verify the locally signed package and start its serving ranks:'
-  show docker run "${CONTAINER_SECURITY[@]}" --entrypoint /usr/local/bin/flare "$IMAGE" run '<prepared-package>' \
+  show docker run "${CONTAINER_SECURITY[@]}" "${NCCL_ENV[@]}" --entrypoint /usr/local/bin/flare "$IMAGE" run '<prepared-package>' \
     --rank 0 --rendezvous "$HEAD_IP:$MASTER_PORT" "${SERVE_ARGS[@]}" --host "$HTTP_HOST" --port "$HTTP_PORT"
   for i in "${!PEERS[@]}"; do
-    show ssh "${PEERS[$i]}" docker run "${CONTAINER_SECURITY[@]}" --entrypoint /usr/local/bin/flare "$IMAGE" run \
+    show ssh "${PEERS[$i]}" docker run "${CONTAINER_SECURITY[@]}" "${NCCL_ENV[@]}" --entrypoint /usr/local/bin/flare "$IMAGE" run \
       --rank "$((i+1))" --rendezvous "$HEAD_IP:$MASTER_PORT" "${SERVE_ARGS[@]}"
   done
   exit 0
@@ -417,6 +448,7 @@ start() {
   local n=$1 phase=$2 executable=$3; shift 3
   local name="$RUN_ID-$phase-r$n"
   local cmd=(docker run --pull never -d --name "$name" --label "flare.cluster.launch=$RUN_ID"
+    "${NCCL_ENV[@]}" -e "NCCL_SOCKET_IFNAME=${DUAL_CX7_IFACES:-${RDMA_NETDEVS[$n]}}"
     --user "${USERS[$n]}" --network host --ipc host "${CONTAINER_SECURITY[@]}"
     --device /dev/infiniband --cap-add IPC_LOCK --ulimit memlock=-1:-1
     --stop-timeout 60 --entrypoint "$executable")
